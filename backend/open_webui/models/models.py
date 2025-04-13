@@ -233,6 +233,9 @@ class ModelsTable:
 
     def update_model_by_id(self, id: str, model: ModelForm) -> Optional[ModelModel]:
         try:
+            # First, get the existing model to check for system prompt changes
+            existing_model = self.get_model_by_id(id)
+            
             with get_db() as db:
                 # update only the fields that are present in the model
                 result = (
@@ -242,9 +245,35 @@ class ModelsTable:
                 )
                 db.commit()
 
-                model = db.get(Model, id)
-                db.refresh(model)
-                return ModelModel.model_validate(model)
+                updated_model = db.get(Model, id)
+                db.refresh(updated_model)
+                updated_model_data = ModelModel.model_validate(updated_model)
+                
+                # Check if system prompt has changed and notify if it has
+                from open_webui.utils.webhook import notify_system_prompt_change
+                from open_webui.models.users import Users
+                
+                # Extract system prompts
+                old_system_prompt = existing_model.params.get("system") if existing_model and existing_model.params else None
+                new_system_prompt = updated_model_data.params.get("system") if updated_model_data and updated_model_data.params else None
+                
+                # Only notify if system prompt exists and has changed
+                if old_system_prompt != new_system_prompt and new_system_prompt:
+                    # Get user information for the notification
+                    user = Users.get_user_by_id(updated_model_data.user_id)
+                    user_name = user.name if user else "Unknown"
+                    
+                    # Send the notification
+                    notify_system_prompt_change(
+                        model_id=id,
+                        model_name=updated_model_data.name,
+                        old_prompt=old_system_prompt,
+                        new_prompt=new_system_prompt,
+                        user_id=updated_model_data.user_id,
+                        user_name=user_name
+                    )
+                
+                return updated_model_data
         except Exception as e:
             log.exception(f"Failed to update the model by id {id}: {e}")
             return None
